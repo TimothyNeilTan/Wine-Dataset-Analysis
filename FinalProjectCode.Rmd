@@ -1,0 +1,299 @@
+---
+title: "FinalCodeProject"
+author: "Brian Kim, Ishan Supernekar, JJ Goh, Tim Tan"
+date: "12/14/2019"
+output: pdf_document
+---
+
+##Data Cleaning
+```{r}
+library("tidyverse")
+rm(list = ls())
+
+#github csv
+wine_ratings <- readr::read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2019/2019-05-28/winemag-data-130k-v2.csv")
+
+wine_ratings <- as.data.frame(wine_ratings)
+
+#removes columns (x1, description, region2, taster_twitter_handle, designation)
+wine_ratings <- wine_ratings[,-c(1,3,4,9,11)]
+
+wine_ratings <- na.omit(wine_ratings)
+
+wine_ratings <- wine_ratings %>% filter(!is.na(wine_ratings$price)) %>% 
+  filter(wine_ratings$price < 1000)
+
+
+#factorizing the categorical columns
+for (i in c(1,4,5,6,8,9)){
+  wine_ratings[,i] <- as.factor(wine_ratings[,i])
+}
+```
+
+##Creating the lumps for wrangling categorical features
+```{r}
+#provinces
+wine_ratings <- wine_ratings %>% 
+  mutate(province_ordered = fct_infreq(province),
+         province_lumped = fct_lump(province_ordered,10))
+
+#variety
+wine_ratings <- wine_ratings %>% 
+  mutate(variety_ordered = fct_infreq(variety),
+         variety_lumped = fct_lump(variety_ordered, 10))
+
+#region1
+wine_ratings <- wine_ratings %>% 
+  mutate(region_ordered = fct_infreq(region_1),
+         region_lumped = fct_lump(region_ordered,10))
+
+#winery
+wine_ratings <- wine_ratings %>% 
+  mutate(winery_ordered = fct_infreq(winery),
+         winery_lumped = fct_lump(winery_ordered,10))
+```
+
+##Taking the year out
+```{r}
+n_row <- nrow(wine_ratings)
+b <- wine_ratings$title
+x <- gregexpr("[0-9]+", b)
+c <- regmatches(b,x)
+df <- data.frame(matrix(c))
+df <- df %>% rename(year = matrix.c.)
+for (i in 1:n_row){
+  df$year[i] <- ifelse(grepl("[a-z]", df$year[i]),"",df$year[i])
+  if(i%%1000 == 0){
+    print(i)
+  }
+}
+wine_ratings <- wine_ratings %>% mutate(year = as.numeric(df$year)) 
+wine_ratings <- wine_ratings %>%  filter(!is.na(wine_ratings$year))
+wine_ratings <- wine_ratings %>% filter(year > 1821)
+clean_wine_ratings <- wine_ratings[,c(1,2,3,6,11,13,15,17,18)]
+write.csv(clean_wine_ratings, "clean_wine_ratings.csv")
+```
+
+##Final Data Frame
+```{r}
+set.seed(1812)  
+n_obs <- nrow(clean_wine_ratings)
+  
+#set training data to 75% ( get from problem set)
+train_idx <- sample(n_obs * .75)
+wine_ratings_train <- clean_wine_ratings %>%  slice(train_idx)
+wine_ratings_test <- clean_wine_ratings %>% slice(-train_idx)
+```
+
+##Summary Statistics
+```{r}
+summary(wine_ratings)
+
+#standard deviation
+paste("Price Standard Deviation: ", sd(wine_ratings$price))
+paste("Points Standard Deviation: ",sd(wine_ratings$points))
+
+#mean
+paste("Price Mean: ", mean(wine_ratings$price))
+paste("Points Mean: ", mean(wine_ratings$points))
+```
+
+##5 interesting plots
+```{r}
+library(ggridges)
+#1)
+plot(clean_wine_ratings$points,
+     clean_wine_ratings$price,
+     main = "points to price")
+#2)
+ggplot(clean_wine_ratings, aes(x= price, y = country))+
+  geom_density_ridges() +
+  labs(title = "Ridges with Countries")
+#3)
+ggplot(data = clean_wine_ratings) +
+  geom_point(mapping = aes(x = points, y = price)) +
+  facet_wrap(~province_lumped, scale = "free") +
+  labs(title = "Facet Wrapping Around Provinces")
+#4)  
+ggplot(data = clean_wine_ratings) +
+  geom_point(mapping = aes(x = points,y = price)) +
+  facet_wrap(~taster_name, scale = "free") +
+  labs(title = "Facet Wrapping around Taster names")
+#5
+ggplot(clean_wine_ratings, aes(x= price, y = variety_lumped)) +
+  geom_density_ridges() +
+  xlim(0,200) + 
+  labs(title = "Ridges with Variety")
+```
+##Forward Substep
+```{r}
+fwd_fit <- 
+  regsubsets(points ~ country + price  + variety_lumped + winery_lumped + year,
+           data = wine_ratings_train,
+           method = "forward",
+           nvmax = 10)
+
+summary(fwd_fit)
+```
+##OLS Model
+```{r}
+wine_linear <- lm(points ~.,
+                  data = wine_ratings_train
+                  
+)
+
+
+summary(wine_linear)
+
+library("caret")
+
+
+ols_fit <- 
+  lm(points ~ ., 
+            data = wine_ratings_train)
+
+preds_ols_train <- data.frame(
+  preds = predict(ols_fit, newdata = wine_ratings_train, 
+                  type = "response"), points = wine_ratings_train$points
+)
+
+R2(preds_ols_train$preds, wine_ratings_train$points)
+RMSE(preds_ols_train$preds, wine_ratings_train$points)
+MAE(preds_ols_train$preds, wine_ratings_train$points)
+
+plot(ols_fit)
+
+## plot residuals here
+ggplot(data = wine_ratings_train, aes(x = country , y = price)) + 
+  geom_point(aes(color = country)) + 
+  geom_smooth(method = "lm")
+```
+
+##E-net model, Ridge regression model, and Lasso Model
+We ended up using the Lasso model
+```{r}
+library("caret")
+alpha_list <- seq(0,1,len = 11)
+enet_fit <- cva.glmnet(points ~ country + price + province_lumped + variety_lumped + region_lumped + winery_lumped + year,
+           data = wine_ratings_train, alpha = 0.1)
+preds_enet_train <- data.frame(
+  preds = predict(enet_fit, 
+                  newdata = wine_ratings_train, 
+                  type = "response", 
+                  alpha = 0.1, 
+                  s = Lasso_mod$lambda.min), points = wine_ratings_train$points
+)
+summary(preds_enet_train)
+R2(preds_enet_train$X1, wine_ratings_train$points)
+RMSE(preds_enet_train$X1, wine_ratings_train$points)
+MAE(preds_enet_train$X1, wine_ratings_train$points)
+
+preds_lasso_train <- data.frame(
+  preds = predict(Lasso_mod, newdata = wine_ratings_train, 
+                  type = "response", s = Lasso_mod$lambda.min), cnt = wine_ratings_train
+)
+summary(preds_lasso_train)
+R2(preds_lasso_train$X1, wine_ratings_train$points)
+RMSE(preds_lasso_train$X1, wine_ratings_train$points)
+MAE(preds_lasso_train$X1, wine_ratings_train$points)
+
+preds_ridge_train <- data.frame(
+  preds = predict(Ridge_mod, newdata = wine_ratings_train, 
+                  type = "response", s = Ridge_mod$lambda.min), cnt = wine_ratings_train
+)
+summary(preds_ridge_train)
+R2(preds_ridge_train$X1, wine_ratings_train$points)
+RMSE(preds_ridge_train$X1, wine_ratings_train$points)
+MAE(preds_ridge_train$X1, wine_ratings_train$points)
+
+
+
+R2(preds_enet_train$X1, wine_ratings_train$points)
+RMSE(preds_enet_train$X1, wine_ratings_train$points)
+MAE(preds_enet_train$X1, wine_ratings_train$points)
+
+R2(preds_lasso_train$X1, wine_ratings_train$points)
+RMSE(preds_lasso_train$X1, wine_ratings_train$points)
+MAE(preds_lasso_train$X1, wine_ratings_train$points)
+
+R2(preds_ridge_train$X1, wine_ratings_train$points)
+RMSE(preds_ridge_train$X1, wine_ratings_train$points)
+MAE(preds_ridge_train$X1, wine_ratings_train$points)
+
+preds_lasso_test <- data.frame(
+  preds = predict(Lasso_mod, newdata = wine_ratings_test, 
+                  type = "response", s = Lasso_mod$lambda.min), cnt = wine_ratings_test
+)
+preds_enet_test <- data.frame(
+  preds = predict(enet_fit, 
+                  newdata = wine_ratings_test, 
+                  type = "response", 
+                  alpha = 0.1, 
+                  s = Lasso_mod$lambda.min), points = wine_ratings_test$points
+)
+
+R2(preds_lasso_test$X1, wine_ratings_test$points)
+RMSE(preds_lasso_test$X1, wine_ratings_test$points)
+MAE(preds_lasso_test$X1, wine_ratings_test$points)
+
+R2(preds_enet_test$X1, wine_ratings_test$points)
+RMSE(preds_enet_test$X1, wine_ratings_test$points)
+MAE(preds_enet_test$X1, wine_ratings_test$points)
+```
+
+#Lasso model
+```{r}
+library(glmnet)
+library(glmnetUtils)
+
+
+Lasso_mod <- 
+  cv.glmnet(points ~.,
+           data = wine_ratings_train, alpha = 1, nfolds = 10)
+
+preds_lasso_train <- data.frame(
+  preds = predict(Lasso_mod, newdata = wine_ratings_train, 
+                  type = "response", s = Lasso_mod$lambda.min), cnt = wine_ratings_train
+)
+#results
+R2(preds_lasso_train$X1, wine_ratings_train$points)
+RMSE(preds_lasso_train$X1, wine_ratings_train$points)
+MAE(preds_lasso_train$X1, wine_ratings_train$points)
+
+plot(Lasso_mod)
+coef(Lasso_mod, Lasso_mod$lambda.1se)
+coef(Lasso_mod, Lasso_mod$lambda.min)
+
+```
+
+#Random Forest
+```{r}
+rf_fit <- randomForest(points ~ .,
+                       data = wine_ratings_train,
+                       mtry = 3,
+                       ntree = 100)
+
+plot(rf_fit)
+
+library("randomForestExplainer")
+plot_min_depth_distribution(rf_fit)
+
+varImpPlot(rf_fit)
+
+library("caret")
+train_preds_DF <- data.frame(prediction = predict(rf_fit, data = wine_ratings_train),
+                            true = wine_ratings_train$points)
+
+caret::R2(train_preds_DF$prediction, train_preds_DF$true) #0.4805976
+caret::RMSE(train_preds_DF$prediction, train_preds_DF$true) #2.112798
+caret::MAE(train_preds_DF$prediction, train_preds_DF$true) #1.664857
+
+test_preds_DF <- data.frame(prediction = predict(rf_fit, newdata = wine_ratings_test),
+                            true = wine_ratings_test$points)
+caret::R2(test_preds_DF$prediction, test_preds_DF$true)#0.4818335
+caret::RMSE(test_preds_DF$prediction, test_preds_DF$true) #2.153442
+caret::MAE(test_preds_DF$prediction, test_preds_DF$true) #1.692529
+
+sd(clean_wine_ratings$year)
+
+```
